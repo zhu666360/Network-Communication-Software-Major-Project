@@ -1,5 +1,7 @@
 package com.example.sipclient.sip;
 
+import com.example.sipclient.call.CallManager;
+import com.example.sipclient.chat.MessageHandler;
 import gov.nist.javax.sip.SipStackExt;
 import gov.nist.javax.sip.clientauthutils.AccountManager;
 import gov.nist.javax.sip.clientauthutils.AuthenticationHelper;
@@ -8,8 +10,10 @@ import gov.nist.javax.sip.clientauthutils.UserCredentials;
 import javax.sip.ClientTransaction;
 import javax.sip.IOExceptionEvent;
 import javax.sip.ListeningPoint;
+import javax.sip.ObjectInUseException;
 import javax.sip.RequestEvent;
 import javax.sip.ResponseEvent;
+import javax.sip.ServerTransaction;
 import javax.sip.SipException;
 import javax.sip.SipFactory;
 import javax.sip.SipListener;
@@ -21,9 +25,10 @@ import javax.sip.ViaHeader;
 import javax.sip.address.Address;
 import javax.sip.address.AddressFactory;
 import javax.sip.address.SipURI;
-import javax.sip.header.CallIdHeader;
 import javax.sip.header.CSeqHeader;
+import javax.sip.header.CallIdHeader;
 import javax.sip.header.ContactHeader;
+import javax.sip.header.ContentTypeHeader;
 import javax.sip.header.ExpiresHeader;
 import javax.sip.header.FromHeader;
 import javax.sip.header.HeaderFactory;
@@ -33,6 +38,7 @@ import javax.sip.header.UserAgentHeader;
 import javax.sip.message.MessageFactory;
 import javax.sip.message.Request;
 import javax.sip.message.Response;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.time.Duration;
 import java.util.Collections;
@@ -42,8 +48,6 @@ import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-
-import javax.sip.ObjectInUseException;
 
 /**
  * Simple SIP user agent that can REGISTER and unREGISTER against an MSS registrar.
@@ -69,6 +73,9 @@ public final class SipUserAgent implements SipListener {
     private final ListeningPoint listeningPoint;
     private final ContactHeader contactHeader;
     private final AuthenticationHelper authenticationHelper;
+
+    private MessageHandler messageHandler;
+    private CallManager callManager;
 
     private final AtomicLong cseq = new AtomicLong(1);
 
@@ -142,6 +149,14 @@ public final class SipUserAgent implements SipListener {
         this.authenticationHelper = ((SipStackExt) sipStack).getAuthenticationHelper(accountManager, headerFactory);
     }
 
+    public void setMessageHandler(MessageHandler messageHandler) {
+        this.messageHandler = messageHandler;
+    }
+
+    public void setCallManager(CallManager callManager) {
+        this.callManager = callManager;
+    }
+
     /**
      * Performs SIP registration and blocks until MSS responds or the timeout expires.
      *
@@ -188,6 +203,46 @@ public final class SipUserAgent implements SipListener {
 
     public boolean isRegistered() {
         return registered;
+    }
+
+    public void sendMessage(String targetUri, String text) throws SipException {
+        Objects.requireNonNull(targetUri, "targetUri");
+        Objects.requireNonNull(text, "text");
+        try {
+            SipURI requestUri = (SipURI) addressFactory.createURI(targetUri);
+            Address fromAddress = addressFactory.createAddress(addressFactory.createSipURI(username, registrarHost));
+            FromHeader fromHeader = headerFactory.createFromHeader(fromAddress, generateTag());
+            Address toAddress = addressFactory.createAddress(requestUri);
+            ToHeader toHeader = headerFactory.createToHeader(toAddress, null);
+
+            List<ViaHeader> viaHeaders = Collections.singletonList(
+                    headerFactory.createViaHeader(listeningPoint.getIPAddress(),
+                            listeningPoint.getPort(), transport, null));
+
+            CallIdHeader callIdHeader = sipProvider.getNewCallId();
+            CSeqHeader cSeqHeader = headerFactory.createCSeqHeader(cseq.getAndIncrement(), Request.MESSAGE);
+            MaxForwardsHeader maxForwardsHeader = headerFactory.createMaxForwardsHeader(70);
+
+            Request request = messageFactory.createRequest(
+                    requestUri,
+                    Request.MESSAGE,
+                    callIdHeader,
+                    cSeqHeader,
+                    fromHeader,
+                    toHeader,
+                    viaHeaders,
+                    maxForwardsHeader
+            );
+
+            request.addHeader(contactHeader);
+            ContentTypeHeader contentTypeHeader = headerFactory.createContentTypeHeader("text", "plain");
+            request.setContent(text, contentTypeHeader);
+
+            ClientTransaction transaction = sipProvider.getNewClientTransaction(request);
+            transaction.sendRequest();
+        } catch (ParseException ex) {
+            throw new IllegalArgumentException("目标 URI 不合法", ex);
+        }
     }
 
     private boolean sendRegister(int expires, Duration timeout) throws SipException, InterruptedException {
@@ -251,6 +306,77 @@ public final class SipUserAgent implements SipListener {
         }
     }
 
+    private void handleIncomingMessage(RequestEvent event) {
+        try {
+            ServerTransaction transaction = ensureServerTransaction(event);
+            Response ok = messageFactory.createResponse(Response.OK, event.getRequest());
+            ok.addHeader(contactHeader);
+            transaction.sendResponse(ok);
+        } catch (Exception ex) {
+            System.err.println("Failed to respond to MESSAGE: " + ex.getMessage());
+        }
+        if (messageHandler != null) {
+            String fromUri = extractFromUri(event.getRequest());
+            byte[] raw = event.getRequest().getRawContent();
+            String body = raw == null ? "" : new String(raw, StandardCharsets.UTF_8);
+            messageHandler.handleIncomingMessage(fromUri, body);
+        }
+    }
+
+    private void handleIncomingInvite(RequestEvent event) {
+        try {
+            ServerTransaction transaction = ensureServerTransaction(event);
+            Response ringing = messageFactory.createResponse(Response.RINGING, event.getRequest());
+            ringing.addHeader(contactHeader);
+            transaction.sendResponse(ringing);
+
+            Response ok = messageFactory.createResponse(Response.OK, event.getRequest());
+            ok.addHeader(contactHeader);
+            transaction.sendResponse(ok);
+
+            if (callManager != null) {
+                callManager.acceptIncoming(extractFromUri(event.getRequest()));
+            }
+        } catch (Exception ex) {
+            try {
+                ServerTransaction transaction = ensureServerTransaction(event);
+                Response busy = messageFactory.createResponse(Response.BUSY_HERE, event.getRequest());
+                transaction.sendResponse(busy);
+            } catch (Exception ignored) {
+            }
+            System.err.println("Failed to handle INVITE: " + ex.getMessage());
+        }
+    }
+
+    private void handleIncomingBye(RequestEvent event) {
+        try {
+            ServerTransaction transaction = ensureServerTransaction(event);
+            Response ok = messageFactory.createResponse(Response.OK, event.getRequest());
+            transaction.sendResponse(ok);
+        } catch (Exception ex) {
+            System.err.println("Failed to acknowledge BYE: " + ex.getMessage());
+        }
+        if (callManager != null) {
+            callManager.terminateByRemote(extractFromUri(event.getRequest()));
+        }
+    }
+
+    private ServerTransaction ensureServerTransaction(RequestEvent event) throws SipException {
+        ServerTransaction transaction = event.getServerTransaction();
+        if (transaction == null) {
+            transaction = sipProvider.getNewServerTransaction(event.getRequest());
+        }
+        return transaction;
+    }
+
+    private String extractFromUri(Request request) {
+        FromHeader fromHeader = (FromHeader) request.getHeader(FromHeader.NAME);
+        if (fromHeader == null) {
+            return "unknown";
+        }
+        return fromHeader.getAddress().getURI().toString();
+    }
+
     private ContactHeader buildContactHeader(String localIp, int localPort) throws ParseException {
         SipURI contactUri = addressFactory.createSipURI(username, localIp);
         contactUri.setPort(localPort);
@@ -267,7 +393,15 @@ public final class SipUserAgent implements SipListener {
 
     @Override
     public void processRequest(RequestEvent requestEvent) {
-        // No incoming requests are expected for plain REGISTER flow.
+        Request request = requestEvent.getRequest();
+        String method = request.getMethod();
+        if (Request.MESSAGE.equals(method)) {
+            handleIncomingMessage(requestEvent);
+        } else if (Request.INVITE.equals(method)) {
+            handleIncomingInvite(requestEvent);
+        } else if (Request.BYE.equals(method)) {
+            handleIncomingBye(requestEvent);
+        }
     }
 
     @Override
