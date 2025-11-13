@@ -5,9 +5,11 @@ import com.example.sipclient.media.MediaSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.sip.Dialog;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -63,6 +65,15 @@ public class CallManager {
 
     public void terminateLocal(String remoteUri) {
         findByRemote(remoteUri).ifPresent(this::removeSession);
+    }
+
+    public void attachDialog(String remoteUri, Dialog dialog) {
+        Objects.requireNonNull(remoteUri, "remoteUri");
+        Objects.requireNonNull(dialog, "dialog");
+        findByRemote(remoteUri).ifPresent(session -> {
+            session.bindDialog(dialog);
+            log.debug("Session {} bound to dialog {}", session.getId(), dialog);
+        });
     }
 
     public Collection<CallSession> listSessions() {

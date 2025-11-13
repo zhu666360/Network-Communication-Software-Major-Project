@@ -2,6 +2,7 @@ package com.example.sipclient.call;
 
 import com.example.sipclient.media.MediaSession;
 
+import javax.sip.Dialog;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -24,6 +25,7 @@ public final class CallSession {
     private final boolean incoming;
     private State state;
     private MediaSession mediaSession;
+    private Dialog dialog;
 
     public CallSession(String remoteUri, boolean incoming) {
         this.id = UUID.randomUUID().toString();
@@ -64,6 +66,7 @@ public final class CallSession {
     public void terminate() {
         this.state = State.TERMINATED;
         stopMedia();
+        releaseDialog();
     }
 
     public void startMedia(MediaSession session) {
@@ -81,5 +84,17 @@ public final class CallSession {
             mediaSession.stop();
             mediaSession = null;
         }
+    }
+
+    public synchronized void bindDialog(Dialog dialog) {
+        this.dialog = dialog;
+    }
+
+    public synchronized Dialog getDialog() {
+        return dialog;
+    }
+
+    public synchronized void releaseDialog() {
+        this.dialog = null;
     }
 }

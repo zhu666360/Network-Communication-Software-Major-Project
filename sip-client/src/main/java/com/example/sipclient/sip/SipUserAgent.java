@@ -1,6 +1,7 @@
 package com.example.sipclient.sip;
 
 import com.example.sipclient.call.CallManager;
+import com.example.sipclient.call.CallSession;
 import com.example.sipclient.chat.MessageHandler;
 import gov.nist.javax.sip.SipStackExt;
 import gov.nist.javax.sip.clientauthutils.AccountManager;
@@ -45,10 +46,8 @@ import java.text.ParseException;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -77,7 +76,6 @@ public final class SipUserAgent implements SipListener {
     private final ListeningPoint listeningPoint;
     private final ContactHeader contactHeader;
     private final AuthenticationHelper authenticationHelper;
-    private final Map<String, Dialog> dialogs = new ConcurrentHashMap<>();
 
     private MessageHandler messageHandler;
     private CallManager callManager;
@@ -266,21 +264,21 @@ public final class SipUserAgent implements SipListener {
 
     public void hangup(String targetUri) throws SipException {
         Objects.requireNonNull(targetUri, "targetUri");
+        if (callManager == null) {
+            throw new IllegalStateException("Call manager is not configured");
+        }
         String normalized = normalizeUri(targetUri);
-        Dialog dialog = dialogs.get(normalized);
+        Dialog dialog = callManager.findByRemote(normalized)
+                .map(CallSession::getDialog)
+                .orElse(null);
         if (dialog == null) {
-            if (callManager != null) {
-                callManager.terminateLocal(normalized);
-            }
+            callManager.terminateLocal(normalized);
             return;
         }
         Request bye = dialog.createRequest(Request.BYE);
         ClientTransaction transaction = sipProvider.getNewClientTransaction(bye);
         dialog.sendRequest(transaction);
-        dialogs.remove(normalized);
-        if (callManager != null) {
-            callManager.terminateLocal(normalized);
-        }
+        callManager.terminateLocal(normalized);
     }
 
     private boolean sendRegister(int expires, Duration timeout) throws SipException, InterruptedException {
@@ -419,12 +417,13 @@ public final class SipUserAgent implements SipListener {
             ok.addHeader(contactHeader);
             transaction.sendResponse(ok);
 
+            CallSession session = null;
             if (callManager != null) {
-                callManager.acceptIncoming(remote);
+                session = callManager.acceptIncoming(remote);
             }
             Dialog dialog = transaction.getDialog();
-            if (dialog != null) {
-                dialogs.put(remote, dialog);
+            if (dialog != null && callManager != null) {
+                callManager.attachDialog(remote, dialog);
             }
         } catch (Exception ex) {
             try {
@@ -446,7 +445,6 @@ public final class SipUserAgent implements SipListener {
             System.err.println("Failed to acknowledge BYE: " + ex.getMessage());
         }
         String remote = extractFromUri(event.getRequest());
-        dialogs.remove(remote);
         if (callManager != null) {
             callManager.terminateByRemote(remote);
         }
@@ -455,8 +453,8 @@ public final class SipUserAgent implements SipListener {
     private void handleAck(RequestEvent event) {
         String remote = extractFromUri(event.getRequest());
         Dialog dialog = event.getDialog();
-        if (dialog != null) {
-            dialogs.put(remote, dialog);
+        if (dialog != null && callManager != null) {
+            callManager.attachDialog(remote, dialog);
         }
         if (callManager != null) {
             callManager.markActive(remote);
@@ -608,7 +606,9 @@ public final class SipUserAgent implements SipListener {
         if (status >= 200 && status < 300) {
             Dialog dialog = responseEvent.getDialog();
             if (dialog != null) {
-                dialogs.put(remote, dialog);
+                if (callManager != null) {
+                    callManager.attachDialog(remote, dialog);
+                }
                 try {
                     Request ack = dialog.createAck(((CSeqHeader) response.getHeader(CSeqHeader.NAME)).getSeqNumber());
                     dialog.sendAck(ack);
@@ -624,7 +624,6 @@ public final class SipUserAgent implements SipListener {
             if (callManager != null) {
                 callManager.terminateLocal(remote);
             }
-            dialogs.remove(remote);
         }
     }
 
@@ -644,3 +643,8 @@ public final class SipUserAgent implements SipListener {
         // No-op
     }
 }
+
+
+
+
+
