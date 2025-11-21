@@ -1,12 +1,12 @@
 package com.example.admin.service;
 
-import com.example.sipclient.config.SipConfig;
 import com.example.sipclient.sip.SipUserAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PreDestroy;
+import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -40,27 +40,14 @@ public class SipService {
             return userAgents.get(sipUri);
         }
         
-        // 创建 SIP 配置
-        SipConfig config = new SipConfig();
-        config.setSipUri(sipUri);
-        config.setPassword(password);
-        config.setLocalIp(localIp);
-        config.setLocalPort(localPort);
-        
         // 创建并初始化 SipUserAgent
-        SipUserAgent userAgent = new SipUserAgent(config);
-        userAgent.start();
+        SipUserAgent userAgent = new SipUserAgent(sipUri, password, localIp, localPort);
         
-        // 等待注册完成（最多等待5秒）
-        int retries = 50;
-        while (retries > 0 && !userAgent.isRegistered()) {
-            Thread.sleep(100);
-            retries--;
-        }
+        // 执行注册
+        userAgent.register(Duration.ofSeconds(5));
         
         if (!userAgent.isRegistered()) {
-            userAgent.stop();
-            throw new Exception("SIP 注册超时，请检查网络和服务器配置");
+            throw new Exception("SIP 注册失败，请检查网络和服务器配置");
         }
         
         // 保存到映射表
@@ -78,8 +65,7 @@ public class SipService {
         SipUserAgent userAgent = userAgents.remove(sipUri);
         if (userAgent != null) {
             try {
-                userAgent.unregister();
-                userAgent.stop();
+                userAgent.unregister(Duration.ofSeconds(3));
                 logger.info("SIP 用户注销成功: {}", sipUri);
             } catch (Exception e) {
                 logger.error("注销 SIP 用户失败: {}", sipUri, e);
@@ -135,7 +121,7 @@ public class SipService {
             throw new Exception("用户未登录: " + fromSipUri);
         }
         
-        userAgent.initiateCall(toSipUri);
+        userAgent.startCall(toSipUri);
         logger.info("呼叫发起成功: {} -> {}", fromSipUri, toSipUri);
     }
     
@@ -163,8 +149,7 @@ public class SipService {
         logger.info("清理所有 SIP 连接...");
         userAgents.forEach((sipUri, userAgent) -> {
             try {
-                userAgent.unregister();
-                userAgent.stop();
+                userAgent.unregister(Duration.ofSeconds(3));
             } catch (Exception e) {
                 logger.error("清理 SIP 连接失败: {}", sipUri, e);
             }

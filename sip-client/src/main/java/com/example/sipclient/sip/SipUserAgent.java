@@ -48,6 +48,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -78,6 +79,7 @@ public final class SipUserAgent implements SipListener {
 
     private MessageHandler messageHandler;
     private CallManager callManager;
+    private final ConcurrentHashMap<String, ServerTransaction> pendingInvites = new ConcurrentHashMap<>();
 
     private final AtomicLong cseq = new AtomicLong(1);
 
@@ -122,7 +124,6 @@ public final class SipUserAgent implements SipListener {
         // OUTBOUND_PROXY makes sure requests are routed to MSS instead of DNS lookups.
         properties.setProperty("gov.nist.javax.sip.OUTBOUND_PROXY",
                 registrarHost + ":" + registrarPort + "/" + transport);
-        // Disable verbose logging by default; raise TRACE_LEVEL for troubleshooting.
         properties.setProperty("gov.nist.javax.sip.TRACE_LEVEL", "0");
 
         this.sipStack = sipFactory.createSipStack(properties);
@@ -257,6 +258,13 @@ public final class SipUserAgent implements SipListener {
         }
     }
 
+    /**
+     * 发起呼叫（startCall 的别名）
+     */
+    public void makeCall(String targetUri) throws SipException {
+        startCall(targetUri);
+    }
+
     public void hangup(String targetUri) throws SipException {
         Objects.requireNonNull(targetUri, "targetUri");
         if (callManager == null) {
@@ -274,6 +282,67 @@ public final class SipUserAgent implements SipListener {
         ClientTransaction transaction = sipProvider.getNewClientTransaction(bye);
         dialog.sendRequest(transaction);
         callManager.terminateLocal(normalized);
+    }
+
+    /**
+     * 接听来电
+     */
+    public void answerCall(String fromUri) throws SipException {
+        Objects.requireNonNull(fromUri, "fromUri");
+        String normalized = normalizeUri(fromUri);
+        ServerTransaction transaction = pendingInvites.remove(normalized);
+        
+        if (transaction == null) {
+            System.err.println("没有来自 " + fromUri + " 的待处理来电");
+            return;
+        }
+
+        try {
+            // 发送 200 OK 响应
+            Response ok = messageFactory.createResponse(Response.OK, transaction.getRequest());
+            ok.addHeader(contactHeader);
+            transaction.sendResponse(ok);
+
+            // 标记呼叫为活跃状态
+            if (callManager != null) {
+                callManager.answerCall(normalized);
+            }
+            
+            System.out.println("✓ 已接听来自 " + fromUri + " 的呼叫");
+        } catch (Exception ex) {
+            System.err.println("接听失败: " + ex.getMessage());
+            throw new SipException("Failed to answer call", ex);
+        }
+    }
+
+    /**
+     * 拒接来电
+     */
+    public void rejectCall(String fromUri) throws SipException {
+        Objects.requireNonNull(fromUri, "fromUri");
+        String normalized = normalizeUri(fromUri);
+        ServerTransaction transaction = pendingInvites.remove(normalized);
+        
+        if (transaction == null) {
+            System.err.println("没有来自 " + fromUri + " 的待处理来电");
+            return;
+        }
+
+        try {
+            // 发送 486 Busy Here 响应
+            Response busy = messageFactory.createResponse(Response.BUSY_HERE, transaction.getRequest());
+            transaction.sendResponse(busy);
+
+            // 移除呼叫会话
+            if (callManager != null) {
+                callManager.rejectCall(normalized);
+            }
+            
+            System.out.println("✓ 已拒接来自 " + fromUri + " 的呼叫");
+        } catch (Exception ex) {
+            System.err.println("拒接失败: " + ex.getMessage());
+            throw new SipException("Failed to reject call", ex);
+        }
     }
 
     private boolean sendRegister(int expires, Duration timeout) throws SipException, InterruptedException {
@@ -404,21 +473,25 @@ public final class SipUserAgent implements SipListener {
         String remote = extractFromUri(event.getRequest());
         try {
             ServerTransaction transaction = ensureServerTransaction(event);
+            
+            // 发送 180 Ringing 响应,表示振铃中
             Response ringing = messageFactory.createResponse(Response.RINGING, event.getRequest());
             ringing.addHeader(contactHeader);
             transaction.sendResponse(ringing);
 
-            Response ok = messageFactory.createResponse(Response.OK, event.getRequest());
-            ok.addHeader(contactHeader);
-            transaction.sendResponse(ok);
+            // 保存待处理的邀请,等待用户手动接听或拒接
+            pendingInvites.put(remote, transaction);
 
-            CallSession session = null;
+            // 通知 CallManager 有来电
             if (callManager != null) {
-                session = callManager.acceptIncoming(remote);
-            }
-            Dialog dialog = transaction.getDialog();
-            if (dialog != null && callManager != null) {
-                callManager.attachDialog(remote, dialog);
+                System.out.println("[DEBUG] 调用 CallManager.acceptIncoming: " + remote);
+                callManager.acceptIncoming(remote);
+                Dialog dialog = transaction.getDialog();
+                if (dialog != null) {
+                    callManager.attachDialog(remote, dialog);
+                }
+            } else {
+                System.out.println("[DEBUG] CallManager 为 null!");
             }
         } catch (Exception ex) {
             try {

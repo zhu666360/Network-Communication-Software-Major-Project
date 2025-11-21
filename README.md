@@ -42,7 +42,7 @@
 | SIP 服务器 | MSS (Mobicents) | - | 可选，也可用其他 SIP 服务器 |
 | 服务端框架 | Spring Boot | 3.2.5 | REST API 和业务逻辑 |
 | 安全认证 | JWT | 0.12.3 | Token 认证 |
-| 客户端 UI | Java Swing/JavaFX | - | 桌面 GUI |
+| 客户端 UI | JavaFX | 21.0.1 | 现代化桌面 GUI ✅ 已实现 |
 | 日志框架 | SLF4J + Logback | 2.0.12 / 1.5.6 | 日志管理 |
 | 测试框架 | JUnit 5 + Mockito | 5.10.2 / 5.11.0 | 单元测试 |
 
@@ -68,10 +68,27 @@ Project/
 │   │       ├── config/               # 配置管理
 │   │       │   └── SipConfig.java
 │   │       ├── ui/                   # 用户界面
-│   │       │   ├── ConsoleMain.java  # 命令行界面（已实现）
-│   │       │   └── gui/              # 图形界面（待实现）
+│   │       │   ├── ConsoleMain.java       # 命令行界面（已实现）
+│   │       │   ├── QuickStartUser101.java # 快速启动脚本（用户 101）
+│   │       │   └── QuickStartUser102.java # 快速启动脚本（用户 102）
+│   │       ├── gui/                  # 图形界面 ✅ 已实现
+│   │       │   ├── SipClientApp.java      # JavaFX 主应用
+│   │       │   ├── controller/            # FXML 控制器
+│   │       │   │   ├── LoginController.java
+│   │       │   │   ├── MainController.java
+│   │       │   │   ├── IncomingCallController.java
+│   │       │   │   └── CallController.java
+│   │       │   └── model/                 # 数据模型
+│   │       │       ├── Contact.java
+│   │       │       └── Message.java
 │   │       └── api/                  # 与服务器通信
 │   │           └── ServerApiClient.java
+│   ├── src/main/resources/
+│   │   └── fxml/                     # JavaFX 界面文件
+│   │       ├── login.fxml                 # 登录界面
+│   │       ├── main.fxml                  # 主界面
+│   │       ├── incoming_call.fxml         # 来电弹窗
+│   │       └── call.fxml                  # 通话窗口
 │   └── pom.xml
 │
 ├── admin-server/                     # Java 业务服务器模块
@@ -104,7 +121,10 @@ Project/
 │
 ├── README.md                         # 本文件
 ├── QUICKSTART.md                     # 快速开始指南
-└── run-sip-client.ps1               # 客户端启动脚本
+├── start-gui.ps1                    # GUI 客户端启动脚本 ✅
+├── start-sip-user101.ps1            # 命令行客户端启动脚本（用户 101）
+├── start-sip-user102.ps1            # 命令行客户端启动脚本（用户 102）
+└── run-sip-client.ps1               # 通用命令行启动脚本
 ```
 
 ## 核心功能
@@ -115,7 +135,14 @@ Project/
 - [x] 点对点消息收发
 - [x] 音视频呼叫信令（INVITE/ACK/BYE）
 - [x] 呼叫状态管理
+- [x] 来电接听/拒接（Y/N 交互）
 - [x] 命令行客户端界面
+- [x] **JavaFX 图形界面客户端** ✨
+  - [x] 登录界面
+  - [x] 主界面（联系人列表 + 聊天窗口）
+  - [x] 即时消息收发（类微信气泡）
+  - [x] 来电弹窗（接听/拒接）
+  - [x] 通话窗口（计时器）
 - [x] Spring Boot REST API 服务器
 - [x] JWT 认证
 - [x] 用户管理接口
@@ -123,18 +150,18 @@ Project/
 - [x] 呼叫控制接口
 
 ### 🔄 开发中
-- [ ] Java GUI 客户端（Swing/JavaFX）
 - [ ] 客户端与服务器 API 集成
 - [ ] 消息和通话记录持久化
 - [ ] 群聊功能
 - [ ] 文件传输
+- [ ] 音频采集与播放（Java Sound API）
 
 ### 📋 待开发
-- [ ] 音频采集与播放（Java Sound API）
 - [ ] 视频通话
 - [ ] NAT 穿透（STUN/TURN）
 - [ ] 用户在线状态同步
 - [ ] 消息推送通知
+- [ ] 动态添加联系人
 
 ---
 
@@ -158,10 +185,61 @@ Project/
 
 ### 启动步骤
 
-#### 方式 1：快速测试（命令行客户端）
+#### 方式 1：图形界面客户端（推荐）✨
 
 ```powershell
-# 启动 SIP 客户端
+# 启动 JavaFX GUI 客户端
+.\start-gui.ps1
+```
+
+**或使用 Maven：**
+```powershell
+cd sip-client
+mvn javafx:run
+```
+
+**GUI 功能特性：**
+- 🎨 现代化界面设计（类微信风格）
+- 💬 即时消息收发（蓝色/灰色气泡）
+- 📞 语音呼叫发起/接听/拒接
+- 👥 联系人列表管理
+- 🔔 来电弹窗提醒
+- ⏱️ 通话计时器
+- 📊 未读消息徽章
+
+**默认配置：**
+- SIP URI: `sip:101@10.29.133.174:5060`
+- 密码: `101`
+- 本地 IP: `10.29.133.174`
+- 本地端口: `5061`
+
+#### 方式 2：命令行客户端（快速测试）
+
+**启动用户 101：**
+```powershell
+.\start-sip-user101.ps1
+```
+
+**启动用户 102（测试用）：**
+```powershell
+.\start-sip-user102.ps1
+```
+
+**可用命令：**
+- `help` - 显示帮助
+- `msg <sip:target@host> <内容>` - 发送消息
+- `call <sip:target@host>` - 发起呼叫
+- `Y / N` - 接听/拒接来电
+- `hangup <sip:target@host>` - 挂断
+- `unregister` - 注销
+- `exit` - 退出
+
+#### 方式 3：通用命令行（自定义配置）
+
+#### 方式 3：通用命令行（自定义配置）
+
+```powershell
+# 启动 SIP 客户端（需要手动输入配置）
 .\run-sip-client.ps1
 ```
 
@@ -170,15 +248,7 @@ Project/
 - 密码
 - 本地 IP 和端口
 
-**可用命令：**
-- `help` - 显示帮助
-- `msg <sip:target@host> <内容>` - 发送消息
-- `call <sip:target@host>` - 发起呼叫
-- `hangup <sip:target@host>` - 挂断
-- `unregister` - 注销
-- `exit` - 退出
-
-#### 方式 2：完整系统（客户端 + 服务器）
+#### 方式 4：完整系统（客户端 + 服务器）
 
 **1. 启动业务服务器**
 ```powershell
@@ -189,12 +259,18 @@ mvn spring-boot:run
 服务器运行在 `http://localhost:8081`
 
 **2. 启动客户端**
+
+**图形界面：**
 ```powershell
-cd sip-client
-mvn exec:java "-Dexec.mainClass=com.example.sipclient.ui.ConsoleMain"
+.\start-gui.ps1
 ```
 
-或使用脚本：
+**命令行界面：**
+```powershell
+.\start-sip-user101.ps1
+```
+
+**或使用脚本：**
 ```powershell
 .\run-sip-client.ps1
 ```
@@ -220,38 +296,249 @@ curl http://localhost:8081/api/stats
 
 ---
 
+## JavaFX 图形界面详解 ✨
+
+### 界面组件
+
+#### 1. 登录界面
+- 简洁的表单设计
+- 预填充默认配置
+- 异步连接和注册
+- 进度指示器和状态提示
+
+#### 2. 主界面
+
+**布局结构：**
+```
+┌─────────────────────────────────────────────────────┐
+│  SIP 客户端 - sip:101@10.29.133.174:5060   [最小化][关闭] │
+├──────────┬──────────────────────────────────────────┤
+│ 联系人列表 │  [联系人名称]              [📞 语音通话]  │
+│          │  ────────────────────────────────────── │
+│ 👤 102    │                                          │
+│ 最后消息  │     💬 聊天消息区域                      │
+│ [1] 12:30│     （类微信气泡，蓝色=发送，灰色=接收）   │
+│          │                                          │
+│ 👤 111    │                                          │
+│ 最后消息  │                                          │
+│ 13:45    │  ────────────────────────────────────── │
+│          │  ┌────────────────────────────────────┐ │
+│ 👤 103    │  │ 输入消息...                        │ │
+│          │  │ (Shift+Enter 换行, Enter 发送)     │ │
+│          │  └────────────────────────────────────┘ │
+│          │                            [发送]        │
+├──────────┴──────────────────────────────────────────┤
+│  状态栏：已连接                                      │
+└─────────────────────────────────────────────────────┘
+```
+
+**功能特性：**
+- **联系人列表**
+  - 显示联系人头像（占位符）
+  - 最后一条消息预览
+  - 消息时间戳
+  - 未读消息红色徽章
+  
+- **聊天窗口**
+  - 消息气泡样式（发送=蓝色，接收=灰色）
+  - 自动滚动到最新消息
+  - 消息时间显示
+  - Enter 发送，Shift+Enter 换行
+  
+- **语音通话**
+  - 点击按钮发起呼叫
+  - 自动打开通话窗口
+
+#### 3. 来电弹窗
+- 模态对话框
+- 显示来电方信息
+- 接听（绿色）/ 拒接（红色）按钮
+- 阻塞式交互
+
+#### 4. 通话窗口
+- 独立窗口
+- 紫色渐变背景
+- 实时通话计时（HH:MM:SS）
+- 挂断按钮（红色）
+- 静音按钮（待实现）
+
+### 测试步骤
+
+**场景 1：GUI 客户端 ↔ 命令行客户端消息测试**
+
+1. 启动 GUI 客户端（用户 101）
+   ```powershell
+   .\start-gui.ps1
+   ```
+
+2. 启动命令行客户端（用户 102）
+   ```powershell
+   .\start-sip-user102.ps1
+   ```
+
+3. 在 GUI 中选择联系人 "102"，输入消息并发送
+
+4. 在 102 终端观察是否收到消息
+
+5. 在 102 终端输入：`msg sip:101@10.29.133.174:5060 你好`
+
+6. GUI 应显示来自 102 的消息
+
+**场景 2：GUI 发起呼叫测试**
+
+1. GUI 中选择联系人 "102"
+
+2. 点击"📞 语音通话"按钮
+
+3. 102 终端应显示来电提示
+
+4. 在 102 终端输入 `Y` 接听
+
+5. GUI 显示通话窗口和计时器
+
+6. 点击挂断按钮结束通话
+
+**场景 3：GUI 接听来电测试**
+
+1. 在 102 终端输入：`call sip:101@10.29.133.174:5060`
+
+2. GUI 弹出来电对话框
+
+3. 点击"✓ 接听"或"✗ 拒接"
+
+### 技术实现
+
+- **框架**: JavaFX 21.0.1
+- **布局**: FXML + Controller
+- **样式**: 内联 CSS（-fx-* 属性）
+- **架构**: MVC 模式
+  - **Model**: Contact, Message
+  - **View**: FXML 文件
+  - **Controller**: LoginController, MainController 等
+
+### 已集成的后端功能
+
+| 功能 | 实现状态 | 调用方法 |
+|------|---------|---------|
+| SIP 注册 | ✅ | `userAgent.register()` |
+| 发送消息 | ✅ | `userAgent.sendMessage()` |
+| 接收消息 | ✅ | `MessageHandler.handleIncomingMessage()` |
+| 发起呼叫 | ✅ | `userAgent.makeCall()` |
+| 接听来电 | ✅ | `userAgent.answerCall()` |
+| 拒接来电 | ✅ | `userAgent.rejectCall()` |
+| 挂断通话 | ✅ | `userAgent.hangup()` |
+| 来电通知 | ✅ | `CallManager.IncomingCallListener` |
+
+### 待实现功能
+
+- [ ] 注销登录按钮
+- [ ] 动态添加联系人
+- [ ] 静音功能（RTP 控制）
+- [ ] 联系人编辑/删除
+- [ ] 消息历史持久化
+- [ ] 文件传输
+- [ ] 群组聊天
+- [ ] 视频通话
+- [ ] 表情符号
+- [ ] 头像上传/显示
+
+---
+
 ## 开发指南
 
 ### 客户端开发
 
 #### 当前状态
 - ✅ 命令行界面（`ConsoleMain.java`）- 已完成
-- ❌ 图形界面（GUI）- 待开发
+- ✅ 图形界面（JavaFX）- **已完成** ✨
+  - ✅ 登录界面
+  - ✅ 主界面（联系人 + 聊天）
+  - ✅ 来电弹窗
+  - ✅ 通话窗口
 
-#### GUI 开发计划
+#### GUI 架构
 
-**技术选型：**
-- **Java Swing** - 轻量、成熟、跨平台
-- **JavaFX** - 现代、美观、推荐使用
-
-**推荐界面布局：**
+**目录结构：**
 ```
-┌─────────────────────────────────────────┐
-│  SIP 通信客户端                    [最小化][关闭]│
-├──────────┬──────────────────────────────┤
-│ 联系人列表 │  聊天窗口                      │
-│          │  ┌──────────────────────┐    │
-│ 👤 Alice  │  │  Alice: 你好！         │    │
-│ 👤 Bob    │  │  Me: 你好，在吗？      │    │
-│ 👤 Charlie│  │  ...                  │    │
-│          │  └──────────────────────┘    │
-│          │  ┌──────────────────────┐    │
-│          │  │ 输入消息...      [发送] │    │
-│ [呼叫] [文件]│  └──────────────────────┘    │
-└──────────┴──────────────────────────────┘
+sip-client/src/main/
+├── java/com/example/sipclient/gui/
+│   ├── SipClientApp.java              # 主应用入口
+│   ├── controller/
+│   │   ├── LoginController.java       # 登录逻辑
+│   │   ├── MainController.java        # 主界面逻辑
+│   │   ├── IncomingCallController.java# 来电处理
+│   │   └── CallController.java        # 通话控制
+│   └── model/
+│       ├── Contact.java               # 联系人模型
+│       └── Message.java               # 消息模型
+└── resources/fxml/
+    ├── login.fxml                     # 登录界面
+    ├── main.fxml                      # 主界面
+    ├── incoming_call.fxml             # 来电弹窗
+    └── call.fxml                      # 通话窗口
 ```
 
-#### 客户端与服务器通信
+**核心类说明：**
+
+- **SipClientApp** - JavaFX 应用入口
+- **LoginController** - 处理登录表单、异步注册、跳转主界面
+- **MainController** - 管理联系人列表、聊天窗口、消息收发、呼叫发起
+- **IncomingCallController** - 处理来电接听/拒接
+- **CallController** - 管理通话状态、计时器、挂断操作
+
+#### 扩展开发建议
+
+**1. 添加注销功能**
+```java
+// 在 MainController 中添加菜单栏
+@FXML
+private void handleLogout() {
+    userAgent.unregister();
+    // 跳转回登录界面
+}
+```
+
+**2. 动态添加联系人**
+```java
+// 创建 AddContactDialog
+@FXML
+private void handleAddContact() {
+    TextInputDialog dialog = new TextInputDialog();
+    dialog.setTitle("添加联系人");
+    dialog.setHeaderText("输入 SIP URI");
+    Optional<String> result = dialog.showAndWait();
+    result.ifPresent(uri -> {
+        Contact contact = new Contact(extractId(uri), uri, "新联系人");
+        contacts.add(contact);
+    });
+}
+```
+
+**3. 消息持久化**
+```java
+// 集成数据库或文件存储
+private void saveMessage(Message msg) {
+    // 保存到 SQLite 或 JSON 文件
+}
+```
+
+#### GUI 开发参考
+
+#### GUI 开发参考
+
+**JavaFX 官方资源：**
+- 官网：https://openjfx.io/
+- 文档：https://openjfx.io/javadoc/21/
+- 教程：https://docs.oracle.com/javafx/2/
+
+**FXML 参考：**
+- Scene Builder（可视化设计工具）：https://gluonhq.com/products/scene-builder/
+- FXML 规范：https://docs.oracle.com/javase/8/javafx/api/javafx/fxml/doc-files/introduction_to_fxml.html
+
+**CSS 样式参考：**
+- JavaFX CSS 参考：https://docs.oracle.com/javafx/2/api/javafx/scene/doc-files/cssref.html
+
+#### 命令行客户端开发
 
 客户端需要实现 `ServerApiClient` 类，调用服务器 REST API：
 
@@ -391,13 +678,15 @@ A: 建议实现：
 - [x] 服务器 REST API
 - [x] 命令行客户端
 
-### 阶段 2：GUI 客户端（进行中）
-- [ ] JavaFX 主窗口
-- [ ] 联系人列表
-- [ ] 聊天界面
-- [ ] 呼叫界面
+### 阶段 2：GUI 客户端（已完成）✅
+- [x] JavaFX 主窗口
+- [x] 登录界面
+- [x] 联系人列表
+- [x] 聊天界面（类微信气泡）
+- [x] 来电弹窗
+- [x] 通话窗口（带计时器）
 
-### 阶段 3：数据持久化
+### 阶段 3：数据持久化（进行中）
 - [ ] 数据库集成
 - [ ] 消息存储
 - [ ] 通话记录

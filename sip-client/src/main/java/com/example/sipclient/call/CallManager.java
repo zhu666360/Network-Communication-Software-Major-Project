@@ -19,11 +19,16 @@ import java.util.function.Supplier;
  */
 public class CallManager {
 
+    public interface IncomingCallListener {
+        void onIncomingCall(String fromUri, String sessionId);
+    }
+
     private static final Logger log = LoggerFactory.getLogger(CallManager.class);
 
     private final Map<String, CallSession> sessionsById = new ConcurrentHashMap<>();
     private final Map<String, String> remoteIndex = new ConcurrentHashMap<>();
     private final Supplier<MediaSession> mediaSupplier;
+    private IncomingCallListener incomingCallListener;
 
     public CallManager() {
         this(AudioSession::new);
@@ -31,6 +36,10 @@ public class CallManager {
 
     public CallManager(Supplier<MediaSession> mediaSupplier) {
         this.mediaSupplier = mediaSupplier == null ? AudioSession::new : mediaSupplier;
+    }
+
+    public void setIncomingCallListener(IncomingCallListener listener) {
+        this.incomingCallListener = listener;
     }
 
     public CallSession startOutgoing(String targetUri) {
@@ -46,6 +55,9 @@ public class CallManager {
         session.markRinging();
         registerSession(session);
         log.info("收到来自 {} 的来电，sessionId={}", fromUri, session.getId());
+        if (incomingCallListener != null) {
+            incomingCallListener.onIncomingCall(fromUri, session.getId());
+        }
         return session;
     }
 
@@ -83,6 +95,21 @@ public class CallManager {
     public Optional<CallSession> findByRemote(String remoteUri) {
         String sessionId = remoteIndex.get(remoteUri);
         return sessionId == null ? Optional.empty() : Optional.ofNullable(sessionsById.get(sessionId));
+    }
+
+    public void answerCall(String remoteUri) {
+        findByRemote(remoteUri).ifPresent(session -> {
+            session.markActive();
+            session.startMedia(mediaSupplier.get());
+            log.info("已接听来自 {} 的呼叫", remoteUri);
+        });
+    }
+
+    public void rejectCall(String remoteUri) {
+        findByRemote(remoteUri).ifPresent(session -> {
+            removeSession(session);
+            log.info("已拒接来自 {} 的呼叫", remoteUri);
+        });
     }
 
     private void registerSession(CallSession session) {
