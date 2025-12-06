@@ -51,6 +51,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import com.example.sipclient.media.SdpTools;
 import com.example.sipclient.media.AudioSession;
 /**
@@ -88,6 +91,12 @@ public final class SipUserAgent implements SipListener {
 
     private volatile boolean registered;
     private volatile CountDownLatch registrationLatch = new CountDownLatch(0);
+    
+    // [新增] 注册续期定时器
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private volatile ScheduledFuture<?> reRegisterTask;
+    private volatile ScheduledFuture<?> keepAliveTask;
+    private volatile int currentExpiresSeconds = DEFAULT_EXPIRES_SECONDS;
 
     /**
      * Creates a SIP user agent bound to a local socket that can register to MSS.
@@ -128,6 +137,15 @@ public final class SipUserAgent implements SipListener {
         properties.setProperty("gov.nist.javax.sip.OUTBOUND_PROXY",
                 registrarHost + ":" + registrarPort + "/" + transport);
         properties.setProperty("gov.nist.javax.sip.TRACE_LEVEL", "0");
+        
+        // [新增] 配置心跳和超时参数，防止 NAT 超时导致掉线
+        properties.setProperty("gov.nist.javax.sip.RELIABLE_CONNECTION_KEEP_ALIVE_TIMEOUT", "30");  // 30秒心跳
+        properties.setProperty("gov.nist.javax.sip.THREAD_POOL_SIZE", "4");
+        properties.setProperty("gov.nist.javax.sip.REENTRANT_LISTENER", "true");
+        // 禁用自动重传超时断开
+        properties.setProperty("gov.nist.javax.sip.MAX_MESSAGE_SIZE", "1048576");
+        properties.setProperty("gov.nist.javax.sip.CACHE_CLIENT_CONNECTIONS", "true");
+        properties.setProperty("gov.nist.javax.sip.CACHE_SERVER_CONNECTIONS", "true");
 
         this.sipStack = sipFactory.createSipStack(properties);
         this.listeningPoint = sipStack.createListeningPoint(localIp, localPort, transport);
@@ -196,6 +214,28 @@ public final class SipUserAgent implements SipListener {
      */
     public void shutdown() {
         System.out.println("[SipUserAgent] 关闭 SIP 连接...");
+        
+        // [新增] 取消自动续期任务
+        if (reRegisterTask != null && !reRegisterTask.isCancelled()) {
+            reRegisterTask.cancel(false);
+            System.out.println("[SipUserAgent] 已取消自动续期任务");
+        }
+        
+        // [新增] 取消心跳任务
+        if (keepAliveTask != null && !keepAliveTask.isCancelled()) {
+            keepAliveTask.cancel(false);
+            System.out.println("[SipUserAgent] 已取消心跳任务");
+        }
+        
+        // [新增] 关闭调度器
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(2, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+        }
         
         // 1. 先尝试注销（如果已注册）
         if (registered) {
@@ -700,7 +740,19 @@ public final class SipUserAgent implements SipListener {
 
     @Override
     public void processTimeout(TimeoutEvent timeoutEvent) {
-        registered = false;
+        System.err.println("[SipUserAgent] 收到超时事件: " + timeoutEvent);
+        if (timeoutEvent.getClientTransaction() != null) {
+            Request request = timeoutEvent.getClientTransaction().getRequest();
+            if (request != null) {
+                String method = ((CSeqHeader) request.getHeader(CSeqHeader.NAME)).getMethod();
+                System.err.println("[SipUserAgent] 超时的请求类型: " + method);
+                // 只在 REGISTER 超时时才标记为未注册
+                if (Request.REGISTER.equals(method)) {
+                    registered = false;
+                    System.err.println("[SipUserAgent] REGISTER 超时，标记为未注册");
+                }
+            }
+        }
         registrationLatch.countDown();
     }
 
@@ -732,7 +784,15 @@ public final class SipUserAgent implements SipListener {
                 String remoteSdp = new String(response.getRawContent(), StandardCharsets.UTF_8);
                 startAudioEngine(remoteSdp);
             }
-            registered = getExpiresFromResponse(response) > 0;
+            int expires = getExpiresFromResponse(response);
+            registered = expires > 0;
+            currentExpiresSeconds = expires;
+            
+            // [新增] 安排自动续期任务（在过期前80%的时间点续期）
+            if (registered) {
+                scheduleReRegistration();
+            }
+            
             registrationLatch.countDown();
         } else if (status >= 400) {
             registered = false;
@@ -776,7 +836,13 @@ public final class SipUserAgent implements SipListener {
 
     @Override
     public void processIOException(IOExceptionEvent exceptionEvent) {
-        registered = false;
+        System.err.println("[SipUserAgent] 收到网络异常事件: " + exceptionEvent);
+        System.err.println("[SipUserAgent] 异常详情: Host=" + exceptionEvent.getHost() 
+            + ", Port=" + exceptionEvent.getPort() 
+            + ", Transport=" + exceptionEvent.getTransport());
+        // 网络异常不立即断开注册，可能只是临时网络问题
+        // registered = false;
+        System.err.println("[SipUserAgent] 保持注册状态，等待网络恢复");
         registrationLatch.countDown();
     }
 
@@ -799,7 +865,94 @@ public final class SipUserAgent implements SipListener {
             new Thread(() -> audioSession.start(remoteIp, remotePort, localAudioPort)).start();
         }
     }
+    
+    /**
+     * [新增] 安排自动续期任务，在注册过期前80%的时间点重新注册
+     */
+    private void scheduleReRegistration() {
+        // 取消旧任务（如果有）
+        if (reRegisterTask != null && !reRegisterTask.isCancelled()) {
+            reRegisterTask.cancel(false);
+        }
+        if (keepAliveTask != null && !keepAliveTask.isCancelled()) {
+            keepAliveTask.cancel(false);
+        }
+        
+        // 计算续期时间：在过期前20%时续期（例如3600秒的话，在2880秒后续期）
+        long delaySeconds = (long) (currentExpiresSeconds * 0.8);
+        System.out.println("[SipUserAgent] 安排自动续期任务: " + delaySeconds + " 秒后执行 (注册过期时间: " + currentExpiresSeconds + " 秒)");
+        
+        reRegisterTask = scheduler.schedule(() -> {
+            try {
+                System.out.println("[SipUserAgent] 执行自动续期...");
+                boolean success = register(Duration.ofSeconds(10));
+                if (success) {
+                    System.out.println("[SipUserAgent] 自动续期成功");
+                } else {
+                    System.err.println("[SipUserAgent] 自动续期失败，注册可能过期");
+                }
+            } catch (Exception e) {
+                System.err.println("[SipUserAgent] 自动续期异常: " + e.getMessage());
+            }
+        }, delaySeconds, TimeUnit.SECONDS);
+        
+        // [新增] 启动 OPTIONS 心跳，每30秒发送一次保持 NAT 映射
+        keepAliveTask = scheduler.scheduleAtFixedRate(() -> {
+            try {
+                sendOptionsKeepAlive();
+            } catch (Exception e) {
+                System.err.println("[SipUserAgent] 心跳发送失败: " + e.getMessage());
+            }
+        }, 30, 30, TimeUnit.SECONDS);
+        System.out.println("[SipUserAgent] 已启动心跳机制（每30秒发送一次 OPTIONS 请求）");
+    }
+    
+    /**
+     * [新增] 发送 OPTIONS 请求作为心跳，保持 NAT 映射活跃
+     */
+    private void sendOptionsKeepAlive() {
+        try {
+            SipURI requestUri = addressFactory.createSipURI(null, registrarHost);
+            requestUri.setPort(registrarPort);
+            requestUri.setTransportParam(transport);
+
+            SipURI fromUri = addressFactory.createSipURI(username, registrarHost);
+            Address fromAddress = addressFactory.createAddress(fromUri);
+            FromHeader fromHeader = headerFactory.createFromHeader(fromAddress, generateTag());
+            ToHeader toHeader = headerFactory.createToHeader(fromAddress, null);
+
+            List<ViaHeader> viaHeaders = Collections.singletonList(
+                    headerFactory.createViaHeader(listeningPoint.getIPAddress(),
+                            listeningPoint.getPort(), transport, null));
+
+            CallIdHeader callIdHeader = sipProvider.getNewCallId();
+            CSeqHeader cSeqHeader = headerFactory.createCSeqHeader(cseq.getAndIncrement(), Request.OPTIONS);
+            MaxForwardsHeader maxForwardsHeader = headerFactory.createMaxForwardsHeader(70);
+
+            Request request = messageFactory.createRequest(
+                    requestUri,
+                    Request.OPTIONS,
+                    callIdHeader,
+                    cSeqHeader,
+                    fromHeader,
+                    toHeader,
+                    viaHeaders,
+                    maxForwardsHeader
+            );
+
+            request.addHeader(contactHeader);
+
+            ClientTransaction transaction = sipProvider.getNewClientTransaction(request);
+            transaction.sendRequest();
+            
+            System.out.println("[SipUserAgent] 发送心跳 OPTIONS 请求");
+        } catch (Exception ex) {
+            System.err.println("[SipUserAgent] 构建 OPTIONS 请求失败: " + ex.getMessage());
+        }
+    }
 }
+
+
 
 
 
